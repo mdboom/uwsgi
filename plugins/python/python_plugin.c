@@ -234,6 +234,11 @@ PyMethodDef uwsgi_spit_method[] = { {"uwsgi_spit", py_uwsgi_spit, METH_VARARGS, 
 PyMethodDef uwsgi_write_method[] = { {"uwsgi_write", py_uwsgi_write, METH_VARARGS, ""} };
 
 int uwsgi_python_init() {
+#ifdef PYTHREE11
+  PyConfig config;
+  PyStatus status;
+  PyConfig_InitPythonConfig(&config);
+#endif
 
 	char *pyversion = strchr(Py_GetVersion(), '\n');
 	if (!pyversion) {
@@ -273,8 +278,17 @@ int uwsgi_python_init() {
 			exit(1);
 		}
 		mbstowcs(wpyhome, up.home, len);
-		Py_SetPythonHome(wpyhome);
-		// do not free this memory !!!
+  #ifdef PYTHREE11
+    status = PyConfig_SetString(&config, &config.home, wpyhome);
+    if (PyStatus_Exception(status)) {
+      PyConfig_Clear(&config);
+      Py_ExitStatusException(status);
+      return 0;
+    }
+  #else
+    Py_SetPythonHome(wpyhome);
+  #endif
+    // do not free this memory !!!
 		//free(wpyhome);
 pep405:
 #else
@@ -297,15 +311,32 @@ pep405:
 
 	wchar_t *pname = uwsgi_calloc(sizeof(wchar_t) * (strlen(program_name)+1));
 	mbstowcs(pname, program_name, strlen(program_name)+1);
-	Py_SetProgramName(pname);
+  #ifdef PYTHREE11
+    status = PyConfig_SetString(&config, &config.program_name, pname);
+    if (PyStatus_Exception(status)) {
+      PyConfig_Clear(&config);
+      Py_ExitStatusException(status);
+      return 0;
+    }
+  #else
+    Py_SetProgramName(pname);
+  #endif
 #else
 	Py_SetProgramName(program_name);
 #endif
 
+  Py_OptimizeFlag = up.optimize;
 
-	Py_OptimizeFlag = up.optimize;
-
-	Py_Initialize();
+#ifdef PYTHREE11
+  status = Py_InitializeFromConfig(&config);
+  PyConfig_Clear(&config);
+  if (PyStatus_Exception(status)) {
+    Py_ExitStatusException(status);
+    return 0;
+  }
+#else
+  Py_Initialize();
+#endif
 
 ready:
 
@@ -1209,8 +1240,14 @@ void uwsgi_python_init_apps() {
 	// prepare for stack suspend/resume
 	if (uwsgi.async > 0) {
 		up.current_recursion_depth = uwsgi_malloc(sizeof(int)*uwsgi.async);
-        	up.current_frame = uwsgi_malloc(sizeof(struct _frame)*uwsgi.async);
-	}
+    #ifdef PYTHREE11
+      up.current_frame =
+                    uwsgi_malloc(sizeof(_PyInterpreterFrame *) * uwsgi.async);
+    #else
+      up.current_frame =
+                    uwsgi_malloc(sizeof(struct _frame) * uwsgi.async);
+    #endif
+  }
 
 	struct uwsgi_string_list *upli = up.import_list;
 	while(upli) {
@@ -1647,12 +1684,24 @@ void uwsgi_python_suspend(struct wsgi_request *wsgi_req) {
 	PyGILState_Release(pgst);
 
 	if (wsgi_req) {
-		up.current_recursion_depth[wsgi_req->async_id] = tstate->recursion_depth;
-		up.current_frame[wsgi_req->async_id] = tstate->frame;
-	}
+    #if (PY_VERSION_HEX < 0x030B0000)
+      up.current_recursion_depth[wsgi_req->async_id] = tstate->recursion_depth;
+      up.current_frame[wsgi_req->async_id] = tstate->frame;
+    #else
+      up.current_recursion_depth[wsgi_req->async_id] = (
+        tstate->recursion_limit - tstate->recursion_remaining);
+      up.current_frame[wsgi_req->async_id] = tstate->cframe->current_frame;
+    #endif
+        }
 	else {
-		up.current_main_recursion_depth = tstate->recursion_depth;
-		up.current_main_frame = tstate->frame;
+    #if (PY_VERSION_HEX < 0x030B0000)
+      up.current_main_recursion_depth = tstate->recursion_depth;
+      up.current_main_frame = tstate->frame;
+    #else
+      up.current_main_recursion_depth = (
+        tstate->recursion_limit - tstate->recursion_remaining);
+      up.current_main_frame = tstate->cframe->current_frame;
+    #endif
 	}
 
 }
@@ -1879,14 +1928,24 @@ void uwsgi_python_resume(struct wsgi_request *wsgi_req) {
 	PyThreadState *tstate = PyThreadState_GET();
 	PyGILState_Release(pgst);
 
+#ifdef PYTHREE11
 	if (wsgi_req) {
-		tstate->recursion_depth = up.current_recursion_depth[wsgi_req->async_id];
-		tstate->frame = up.current_frame[wsgi_req->async_id];
+		tstate->recursion_remaining = tstate->recursion_limit - up.current_recursion_depth[wsgi_req->async_id];
+		tstate->cframe->current_frame = up.current_frame[wsgi_req->async_id];
 	}
 	else {
-		tstate->recursion_depth = up.current_main_recursion_depth;
-		tstate->frame = up.current_main_frame;
+		tstate->recursion_remaining = tstate->recursion_limit - up.current_main_recursion_depth;
+		tstate->cframe->current_frame = up.current_main_frame;
 	}
+#else
+  if (wsgi_req) {
+    tstate->recursion_depth = up.current_recursion_depth[wsgi_req->async_id];
+    tstate->frame = up.current_frame[wsgi_req->async_id];
+  } else {
+    tstate->recursion_depth = up.current_main_recursion_depth;
+    tstate->frame = up.current_main_frame;
+  }
+#endif
 
 }
 

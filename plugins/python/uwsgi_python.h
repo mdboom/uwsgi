@@ -5,6 +5,7 @@
 #include <pythread.h>
 
 #include <frameobject.h>
+#include <internal/pycore_frame.h>
 
 #define PYTHON_APP_TYPE_WSGI		0
 #define PYTHON_APP_TYPE_WEB3		1
@@ -45,6 +46,10 @@
 #define PYTHREE
 #endif
 
+#if (PY_VERSION_HEX >= 0x030B0000)
+#define PYTHREE11
+#endif
+
 #if (PY_MAJOR_VERSION == 3 && PY_MINOR_VERSION < 7) || PY_MAJOR_VERSION < 3
 #define UWSGI_SHOULD_CALL_PYEVAL_INITTHREADS
 #endif
@@ -53,6 +58,20 @@
 #ifndef Py_SET_SIZE
 #define Py_SET_SIZE(o, size) ((o)->ob_size = (size))
 #endif
+#endif
+
+#if (PY_VERSION_HEX < 0x030900B1)
+static inline PyCodeObject *PyFrame_GetCode(PyFrameObject *frame) {
+  Py_INCREF(frame->f_code);
+  return frame->f_code;
+}
+#endif
+
+#if (PY_VERSION_HEX < 0x030900B1)
+static inline PyFrameObject *PyThreadState_GetFrame(PyThreadState *tstate) {
+  Py_XINCREF(tstate->frame);
+  return tstate->frame;
+}
 #endif
 
 #define UWSGI_GET_GIL up.gil_get();
@@ -179,10 +198,18 @@ struct uwsgi_python {
 	char *callable;
 
 	int *current_recursion_depth;
-	struct _frame **current_frame;
+#ifdef PYTHREE11
+  _PyInterpreterFrame **current_frame;
+#else
+  struct _frame **current_frame;
+#endif
 
 	int current_main_recursion_depth;
-	struct _frame *current_main_frame;
+#ifdef PYTHREE11
+  _PyInterpreterFrame *current_main_frame;
+#else
+  struct _frame *current_main_frame;
+#endif
 
 	void (*swap_ts)(struct wsgi_request *, struct uwsgi_app *);
 	void (*reset_ts)(struct wsgi_request *, struct uwsgi_app *);

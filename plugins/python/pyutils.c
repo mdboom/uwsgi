@@ -388,12 +388,15 @@ void init_pyargv() {
 
 	}
 
-	PySys_SetArgv(up.argc, up.py_argv);
+  _Py_COMP_DIAG_PUSH
+  _Py_COMP_DIAG_IGNORE_DEPR_DECLS
+  PySys_SetArgv(up.argc, up.py_argv);
+  _Py_COMP_DIAG_POP
 
-	PyObject *sys_dict = get_uwsgi_pydict("sys");
-	if (!sys_dict) {
-		uwsgi_log("unable to load python sys module !!!\n");
-		exit(1);
+      PyObject *sys_dict = get_uwsgi_pydict("sys");
+  if (!sys_dict) {
+    uwsgi_log("unable to load python sys module !!!\n");
+    exit(1);
 	}
 	if (!up.executable)
 		up.executable = uwsgi.binary_path;
